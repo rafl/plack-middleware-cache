@@ -141,6 +141,43 @@ test_psgi $app => sub {
         is_deeply($trace, [qw(miss store)], 'trace');
         done_testing;
     };
+
+    subtest 'responds with 304 only if If-None-Match and If-Modified-Since both match' => sub {
+        my $time = time;
+        my $response = [
+            200,
+            ['Content-Type' => 'text/plain', 'ETag' => '12345', 'Last-Modified' => str2time($time)],
+            ['moo'],
+        ];
+
+        subtest 'only etag' => sub {
+            my ($res, $trace) = inject_response(
+                $cb, GET('/', 'ETag' => '12345', 'If-Modified-Since' => str2time($time - 1)),
+                $response,
+            );
+            is($res->code, 200, 'status');
+            done_testing;
+        };
+
+        subtest 'only last-modified' => sub {
+            my ($res, $trace) = inject_response(
+                $cb, GET('/', 'ETag' => '54321', 'If-Modified-Since' => str2time($time)),
+                $response,
+            );
+            is($res->code, 200, 'status');
+            done_testing;
+        };
+
+        subtest 'both' => sub {
+            my ($res, $trace) = inject_response(
+                $cb, GET('/', 'ETag' => '12345', 'If-Modified-Since' => str2time($time)),
+                $response,
+            );
+            is($res->code, 304, 'status');
+        };
+
+        done_testing;
+    };
 };
 
 sub inject_response {
