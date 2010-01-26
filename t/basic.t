@@ -2,6 +2,7 @@ use strict;
 use warnings;
 use Test::More;
 use Plack::Test;
+use HTTP::Date;
 use HTTP::Request;
 use HTTP::Request::Common;
 use Storable qw(freeze thaw);
@@ -12,6 +13,10 @@ use Plack::Middleware::Cache::Store;
 
 my $backend_app = sub {
     my ($env) = @_;
+
+    if (my $res = $env->{HTTP_X_PLACK_CACHE_TEST_RESPONSE}) {
+        return thaw(decode_base64($res));
+    }
 
     if ($env->{PATH_INFO} eq '/simple') {
         return [ 200, ['Content-Type' => 'text/plain'], ['moo'] ];
@@ -29,10 +34,6 @@ my $backend_app = sub {
             $writer->write($_) for qw/moo kooh/;
             $writer->close;
         };
-    }
-
-    if (my $res = $env->{HTTP_X_PLACK_CACHE_TEST_RESPONSE}) {
-        return thaw(decode_base64($res));
     }
 
     return [ 404, ['Content-Type' => 'text/plain'], [] ];
@@ -112,6 +113,34 @@ test_psgi $app => sub {
             done_testing;
         };
     }
+
+    subtest 'responds with 304 when If-Modified-Since matches Last-Modified' => sub {
+        my $time = time2str(time);
+        my ($res, $trace) = inject_response(
+            $cb, GET('/', 'If-Modified-Since' => $time),
+            [ 200, ['Content-Type' => 'text/plain', 'Last-Modified' => $time], ['moo'] ],
+        );
+        is($res->code, 304, 'status');
+        ok(!defined $res->header('Content-Type'), 'no Content-Type');
+        ok(!defined $res->header('Content-Length'), 'no Content-Length');
+        ok(!length $res->content, 'no content');
+        is_deeply($trace, [qw(miss store)], 'trace');
+        done_testing;
+    };
+
+    subtest 'responds with 304 when If-None-Match matches ETag' => sub {
+        my ($res, $trace) = inject_response(
+            $cb, GET('/', 'If-None-Match' => '12345'),
+            [ 200, ['Content-Type' => 'text/plain', 'ETag' => '12345'], ['moo'] ],
+        );
+        is($res->code, 304, 'status');
+        ok(!defined $res->header('Content-Type'), 'no Content-Type');
+        ok(!defined $res->header('Content-Length'), 'no Content-Length');
+        is($res->header('ETag'), '12345', 'got ETag');
+        ok(!length $res->content, 'no content');
+        is_deeply($trace, [qw(miss store)], 'trace');
+        done_testing;
+    };
 };
 
 sub inject_response {
